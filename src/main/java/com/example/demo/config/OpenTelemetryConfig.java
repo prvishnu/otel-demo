@@ -2,6 +2,7 @@ package com.example.demo.config;
 
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.exporter.logging.LoggingSpanExporter;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.resources.Resource;
@@ -18,6 +19,15 @@ public class OpenTelemetryConfig {
 
     @PostConstruct
     public void init() {
+
+        {
+            System.out.println("GlobalOpenTelemetry implementation: " + GlobalOpenTelemetry.get().getClass().getName());
+            System.out.println("GlobalOpenTelemetry is noop()? " + (GlobalOpenTelemetry.get() == OpenTelemetry.noop()));
+            Span current = Span.current();
+            System.out.println("Span.current() class: " + current.getClass().getName());
+            System.out.println("Span.current() valid? " + current.getSpanContext().isValid());
+        }
+
         // If some other library or the OTel agent already set a GlobalOpenTelemetry instance,
         // GlobalOpenTelemetry.get() will return a non-noop instance. We should not override it.
         OpenTelemetry current = GlobalOpenTelemetry.get();

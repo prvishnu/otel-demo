@@ -21,8 +21,8 @@ public class DemoController {
 
     @PostMapping("/process")
     public Map<String, Object> process(@RequestBody(required = false) Map<String, Object> body) {
-        Span current = Span.current();
-        SpanContext ctx = current.getSpanContext();
+        Span currentSpan = Span.current();
+        SpanContext ctx = currentSpan.getSpanContext();
         logger.info("Controller: current traceId={} spanId={}", ctx.getTraceId(), ctx.getSpanId());
 
         // call service
