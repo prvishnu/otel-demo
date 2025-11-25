@@ -2,38 +2,45 @@ package com.example.demo.config;
 
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
-import io.opentelemetry.context.propagation.ContextPropagators;
-import io.opentelemetry.context.propagation.TextMapPropagator;
 import io.opentelemetry.exporter.logging.LoggingSpanExporter;
-import io.opentelemetry.extension.trace.propagation.W3CTraceContextPropagator;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Configuration;
-
-import javax.annotation.PostConstruct;
 
 @Configuration
 public class OpenTelemetryConfig {
+    private static final Logger log = LoggerFactory.getLogger(OpenTelemetryConfig.class);
 
     @PostConstruct
-    public void initOpenTelemetry() {
-        // Configure a simple tracer with a logging exporter (for demo)
-        LoggingSpanExporter loggingExporter = new LoggingSpanExporter();
+    public void init() {
+        // If some other library or the OTel agent already set a GlobalOpenTelemetry instance,
+        // GlobalOpenTelemetry.get() will return a non-noop instance. We should not override it.
+        OpenTelemetry current = GlobalOpenTelemetry.get();
+        if (current != OpenTelemetry.noop()) {
+            log.info("Global OpenTelemetry already configured by another component. Skipping SDK registration.");
+            return;
+        }
 
+        log.info("Global OpenTelemetry is noop — registering SDK programmatically.");
+
+        // Build a simple SDK with logging exporter (demo). In production use OTLP exporter, etc.
+        LoggingSpanExporter exporter = new LoggingSpanExporter();
         SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
-                .addSpanProcessor(SimpleSpanProcessor.create(loggingExporter))
+                .addSpanProcessor(SimpleSpanProcessor.create(exporter))
                 .setResource(Resource.getDefault())
                 .build();
 
-        OpenTelemetry openTelemetry = OpenTelemetrySdk.builder()
+        // Use buildAndRegisterGlobal to atomically set the global SDK.
+        OpenTelemetrySdk sdk = OpenTelemetrySdk.builder()
                 .setTracerProvider(tracerProvider)
-                // use W3C trace context as default propagator
-                .setPropagators(ContextPropagators.create(W3CTraceContextPropagator.getInstance()))
                 .buildAndRegisterGlobal();
 
-        // Register globally
-        GlobalOpenTelemetry.set(openTelemetry);
+        // DO NOT call GlobalOpenTelemetry.set(...) here — buildAndRegisterGlobal already set the global.
+        log.info("OpenTelemetry SDK registered programmatically: tracerProvider={}, global={}", tracerProvider, GlobalOpenTelemetry.get());
     }
 }

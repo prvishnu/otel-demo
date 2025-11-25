@@ -19,7 +19,7 @@
 
   <properties>
     <java.version>17</java.version>
-    <otel.version>1.26.0</otel.version>
+    <otel.version>1.46.0</otel.version>
   </properties>
 
   <dependencies>
@@ -27,6 +27,16 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
+       <exclusions>
+        <exclusion>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </exclusion>
+        <exclusion>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <!-- OpenTelemetry SDK and logging exporter (explicit versions via otel.version) -->
@@ -50,6 +60,13 @@
       <artifactId>opentelemetry-extension-trace-propagators</artifactId>
       <version>${otel.version}</version>
     </dependency>
+
+<!-- Jakarta Annotations (PostConstruct) for Java 17 / Spring Boot 3 -->
+  <dependency>
+    <groupId>jakarta.annotation</groupId>
+    <artifactId>jakarta.annotation-api</artifactId>
+    <version>2.1.1</version>
+  </dependency>    
 
     <!-- Apache HttpClient for outgoing HTTP in service -->
     <dependency>
