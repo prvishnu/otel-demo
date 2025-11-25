@@ -14,10 +14,10 @@ public class DemoApplication {
 
     @Bean
     public FilterRegistrationBean<RequestResponseLoggingFilter> loggingFilter() {
-        FilterRegistrationBean<RequestResponseLoggingFilter> registration = new FilterRegistrationBean<>();
-        registration.setFilter(new RequestResponseLoggingFilter());
-        registration.addUrlPatterns("/*");
-        registration.setOrder(1);
-        return registration;
+        FilterRegistrationBean<RequestResponseLoggingFilter> reg = new FilterRegistrationBean<>();
+        reg.setFilter(new RequestResponseLoggingFilter());
+        reg.addUrlPatterns("/*");
+        reg.setOrder(1);
+        return reg;
     }
 }

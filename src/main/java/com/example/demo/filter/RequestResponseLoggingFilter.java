@@ -1,17 +1,18 @@
 package com.example.demo.filter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.opentelemetry.api.GlobalOpenTelemetry;
-import io.opentelemetry.api.trace.*;
-import io.opentelemetry.context.Scope;
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.propagation.TextMapGetter;
-import io.opentelemetry.context.propagation.TextMapSetter;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.util.ContentCachingRequestWrapper;
 import org.springframework.web.util.ContentCachingResponseWrapper;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -20,130 +21,86 @@ import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-
 public class RequestResponseLoggingFilter extends OncePerRequestFilter {
-    private static final Logger logger = LoggerFactory.getLogger(RequestResponseLoggingFilter.class);
+    private static final Logger log = LoggerFactory.getLogger(RequestResponseLoggingFilter.class);
     private final ObjectMapper mapper = new ObjectMapper();
-    private final ExecutorService asyncLogger = Executors.newFixedThreadPool(2);
-    private final int MAX_BODY_BYTES = 64 * 1024; // 64 KB
-
-    private static final Tracer tracer = GlobalOpenTelemetry.getTracer("demo-tracer");
-
-    private static final io.opentelemetry.context.propagation.TextMapPropagator propagator =
-            GlobalOpenTelemetry.getPropagators().getTextMapPropagator();
-
-    // Getter for extracting headers into propagator
-    private static final TextMapGetter<HttpServletRequest> getter = new TextMapGetter<>() {
-        @Override
-        public Iterable<String> keys(HttpServletRequest carrier) {
-            return Collections.list(carrier.getHeaderNames());
-        }
-
-        @Override
-        public String get(HttpServletRequest carrier, String key) {
-            return carrier.getHeader(key);
-        }
-    };
-
-    // Setter for injecting into outgoing header maps (used by service)
-    public static final TextMapSetter<Map<String, String>> mapSetter = (carrier, key, value) -> carrier.put(key, value);
+    private final ExecutorService exec = Executors.newFixedThreadPool(2);
+    private final int MAX_BODY_BYTES = 64 * 1024;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
 
-
-
         ContentCachingRequestWrapper wrappedRequest = new ContentCachingRequestWrapper(request);
         ContentCachingResponseWrapper wrappedResponse = new ContentCachingResponseWrapper(response);
 
+        // correlation id (propagate or create)
         String messageId = getOrCreateMessageId(wrappedRequest);
         wrappedResponse.setHeader("X-Message-Id", messageId);
 
-        // Extract incoming context (if any) using the configured propagator (W3C by default)
-        Context extractedContext = propagator.extract(Context.current(), wrappedRequest, getter);
+        Instant requestTime = Instant.now();
+        long startNs = System.nanoTime();
 
-        // Start a SERVER span using the extracted context as parent (so the trace continues)
-        SpanKind kind = SpanKind.SERVER;
-        SpanBuilder spanBuilder = tracer.spanBuilder(wrappedRequest.getMethod() + " " + wrappedRequest.getRequestURI())
-                .setSpanKind(kind)
-                .setParent(extractedContext);
+        try {
+            filterChain.doFilter(wrappedRequest, wrappedResponse);
+        } finally {
+            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
+            int status = wrappedResponse.getStatus();
 
-        Span serverSpan = spanBuilder.startSpan();
+            // read cached bodies after controller has consumed the request
+            String requestBody = safeGetBody(wrappedRequest.getContentAsByteArray());
+            String responseBody = safeGetBody(wrappedResponse.getContentAsByteArray());
 
-        // Put the span into the current Context
-        try (Scope scope = serverSpan.makeCurrent()) {
-            Instant requestTime = Instant.now();
-            long startNs = System.nanoTime();
+            // extract trace info from current span
+            Span current = Span.current();
+            SpanContext ctx = current.getSpanContext();
+            String traceId = ctx.isValid() ? ctx.getTraceId() : null;
+            String spanId = ctx.isValid() ? ctx.getSpanId() : null;
 
-            try {
-                filterChain.doFilter(wrappedRequest, wrappedResponse);
-            } finally {
-                long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
-                int status = wrappedResponse.getStatus();
-                String path = wrappedRequest.getRequestURI();
-                String method = wrappedRequest.getMethod();
+            Map<String, Object> event = new LinkedHashMap<>();
+            event.put("message_tracking_id", messageId);
+            event.put("endpoint", wrappedRequest.getRequestURI());
+            event.put("method", wrappedRequest.getMethod());
+            event.put("request_timestamp", requestTime.toString());
+            event.put("response_timestamp", Instant.now().toString());
+            event.put("latency_ms", latencyMs);
+            event.put("response_http_code", status);
+            event.put("trace_id", traceId);
+            event.put("span_id", spanId);
+            event.put("client_ip", getClientIp(wrappedRequest));
+            event.put("request_body_summary", summarize(requestBody));
+            event.put("response_body_summary", summarize(responseBody));
 
-                // read request/response body safely (may be empty)
-                String requestBody = safeGetBody(wrappedRequest.getContentAsByteArray());
-                String responseBody = safeGetBody(wrappedResponse.getContentAsByteArray());
+            exec.submit(() -> {
+                try {
+                    String json = mapper.writeValueAsString(event);
+                    // In your deployment replace this with an async push to Kinesis/Firehose/CloudWatch
+                    log.info("EVENT: {}", json);
+                } catch (Exception ex) {
+                    log.error("Failed to serialize event", ex);
+                }
+            });
 
-                // capture trace id from current span context
-                SpanContext spanContext = serverSpan.getSpanContext();
-                String traceId = spanContext.getTraceId();
-                String spanId = spanContext.getSpanId();
-
-                Map<String, Object> event = new LinkedHashMap<>();
-                event.put("message_tracking_id", messageId);
-                event.put("trace_id", traceId);
-                event.put("span_id", spanId);
-                event.put("endpoint", path);
-                event.put("method", method);
-                event.put("request_timestamp", requestTime.toString());
-                event.put("response_timestamp", Instant.now().toString());
-                event.put("latency_ms", latencyMs);
-                event.put("response_http_code", status);
-                event.put("client_ip", getClientIp(wrappedRequest));
-                event.put("request_body_summary", summarize(requestBody));
-                event.put("response_body_summary", summarize(responseBody));
-
-                asyncLogger.submit(() -> {
-                    try {
-                        String json = mapper.writeValueAsString(event);
-                        // For demo we output to logger; in prod publish to Kinesis/Firehose/etc.
-                        logger.info("EVENT: {}", json);
-                    } catch (Exception e) {
-                        logger.error("Failed to serialize event", e);
-                    }
-                });
-
-                // add trace/span attributes to span for richer detail (optional)
-                serverSpan.setAttribute("http.method", method);
-                serverSpan.setAttribute("http.path", path);
-                serverSpan.setAttribute("http.status_code", status);
-                serverSpan.setAttribute("message.id", messageId);
-
-                // end span
-                serverSpan.end();
-
-                // copy response body back to response stream
-                wrappedResponse.copyBodyToResponse();
-            }
-        } // scope closed
+            // copy response back to client
+            wrappedResponse.copyBodyToResponse();
+        }
     }
 
     private String getOrCreateMessageId(HttpServletRequest req) {
         String id = req.getHeader("X-Message-Id");
         if (id != null && !id.isBlank()) return id;
-        String xrid = req.getHeader("X-Request-Id");
-        if (xrid != null && !xrid.isBlank()) return xrid;
+        String r = req.getHeader("X-Request-Id");
+        if (r != null && !r.isBlank()) return r;
         return UUID.randomUUID().toString();
+    }
+
+    private String getClientIp(HttpServletRequest req) {
+        String xff = req.getHeader("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) {
+            return xff.split(",")[0].trim();
+        }
+        return req.getRemoteAddr();
     }
 
     private String safeGetBody(byte[] buf) {
@@ -154,15 +111,7 @@ public class RequestResponseLoggingFilter extends OncePerRequestFilter {
 
     private Object summarize(String body) {
         if (body == null || body.isEmpty()) return "";
-        if (body.length() > 1000) return body.substring(0, 1000) + "...(truncated)";
+        if (body.length() > 2000) return body.substring(0, 2000) + "...(truncated)";
         return body;
-    }
-
-    private String getClientIp(HttpServletRequest req) {
-        String xff = req.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            return xff.split(",")[0].trim();
-        }
-        return req.getRemoteAddr();
     }
 }

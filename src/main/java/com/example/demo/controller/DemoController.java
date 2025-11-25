@@ -12,7 +12,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api")
 public class DemoController {
-    private static final Logger logger = LoggerFactory.getLogger(DemoController.class);
+    private static final Logger log = LoggerFactory.getLogger(DemoController.class);
     private final DemoService demoService;
 
     public DemoController(DemoService demoService) {
@@ -21,16 +21,12 @@ public class DemoController {
 
     @PostMapping("/process")
     public Map<String, Object> process(@RequestBody(required = false) Map<String, Object> body) {
-        Span currentSpan = Span.current();
-        SpanContext ctx = currentSpan.getSpanContext();
-        logger.info("Controller: current traceId={} spanId={}", ctx.getTraceId(), ctx.getSpanId());
+        Span current = Span.current();
+        SpanContext ctx = current.getSpanContext();
+        log.info("Controller: traceId={} spanId={}, valid={}", ctx.getTraceId(), ctx.getSpanId(), ctx.isValid());
 
-        // call service
         demoService.doWork(body);
 
-        return Map.of(
-                "status", "ok",
-                "trace_id", ctx.getTraceId()
-        );
+        return Map.of("status", "ok", "trace_id", ctx.isValid() ? ctx.getTraceId() : null);
     }
 }
